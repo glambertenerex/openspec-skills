@@ -166,7 +166,6 @@ function Get-CherryComparison {
     missingCommits = @($missing)
   }
 }
-
 function Resolve-TargetRefs {
   param(
     [Parameter(Mandatory = $true)]
