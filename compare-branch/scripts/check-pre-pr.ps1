@@ -1,0 +1,332 @@
+[CmdletBinding()]
+param(
+  [Parameter(Mandatory = $true)]
+  [string]$TargetBranch,
+  [string]$Remote = "origin",
+  [switch]$NoFetch,
+  [switch]$Json
+)
+
+Set-StrictMode -Version Latest
+$ErrorActionPreference = "Stop"
+
+function ConvertTo-ProcessArgumentString {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string[]]$Arguments
+  )
+
+  $escaped = foreach ($argument in $Arguments) {
+    if ($argument -notmatch '[\s"]') {
+      $argument
+      continue
+    }
+
+    '"' + ($argument -replace '(\\*)"', '$1$1\"' -replace '(\\+)$', '$1$1') + '"'
+  }
+
+  return ($escaped -join " ")
+}
+
+function Invoke-Git {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string[]]$Arguments,
+    [switch]$AllowFailure
+  )
+
+  $psi = New-Object System.Diagnostics.ProcessStartInfo
+  $psi.FileName = "git"
+  $psi.Arguments = ConvertTo-ProcessArgumentString -Arguments $Arguments
+  $psi.RedirectStandardOutput = $true
+  $psi.RedirectStandardError = $true
+  $psi.UseShellExecute = $false
+  $psi.CreateNoWindow = $true
+  $psi.WorkingDirectory = (Get-Location).Path
+
+  $process = New-Object System.Diagnostics.Process
+  $process.StartInfo = $psi
+  [void]$process.Start()
+
+  $stdout = $process.StandardOutput.ReadToEnd()
+  $stderr = $process.StandardError.ReadToEnd()
+  $process.WaitForExit()
+
+  $exitCode = $process.ExitCode
+  $output = @()
+  if ($stdout) {
+    $output += ($stdout -split "`r?`n")
+  }
+  if ($stderr) {
+    $output += ($stderr -split "`r?`n")
+  }
+  $output = @($output | Where-Object { $_ -ne "" })
+
+  if (-not $AllowFailure -and $exitCode -ne 0) {
+    $joined = $Arguments -join " "
+    $message = ($output | ForEach-Object { "$_" }) -join [Environment]::NewLine
+    throw "git $joined failed.`n$message"
+  }
+
+  return [PSCustomObject]@{
+    ExitCode = $exitCode
+    Output = @($output)
+  }
+}
+
+function Test-GitRef {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$Ref
+  )
+
+  $result = Invoke-Git -Arguments @("rev-parse", "--verify", "--quiet", $Ref) -AllowFailure
+  return $result.ExitCode -eq 0
+}
+
+function Get-TrimmedGitOutput {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string[]]$Arguments
+  )
+
+  $result = Invoke-Git -Arguments $Arguments
+  return (($result.Output -join "`n").Trim())
+}
+
+function Get-CommitInfo {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$Commit
+  )
+
+  $format = "%H|%h|%an|%ae|%ad|%s"
+  $line = Get-TrimmedGitOutput -Arguments @("log", "-1", "--date=short", "--format=$format", $Commit)
+  $parts = $line -split "\|", 6
+
+  [PSCustomObject]@{
+    fullSha = $parts[0]
+    shortSha = $parts[1]
+    authorName = $parts[2]
+    authorEmail = $parts[3]
+    authorDate = $parts[4]
+    subject = $parts[5]
+  }
+}
+
+function Resolve-TargetRefs {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$Target,
+    [Parameter(Mandatory = $true)]
+    [string]$RemoteName
+  )
+
+  $branchName = $null
+  $localHeadRef = $null
+  $remoteRef = $null
+  $exactRef = $null
+
+  if ($Target -match "^refs/heads/(.+)$") {
+    $branchName = $Matches[1]
+    $localHeadRef = "refs/heads/$branchName"
+    $remoteRef = "refs/remotes/$RemoteName/$branchName"
+  } elseif ($Target -match "^refs/remotes/$([Regex]::Escape($RemoteName))/(.+)$") {
+    $branchName = $Matches[2]
+    $localHeadRef = "refs/heads/$branchName"
+    $remoteRef = "refs/remotes/$RemoteName/$branchName"
+  } elseif ($Target -match "^$([Regex]::Escape($RemoteName))/(.+)$") {
+    $branchName = $Matches[1]
+    $localHeadRef = "refs/heads/$branchName"
+    $remoteRef = "refs/remotes/$RemoteName/$branchName"
+  } elseif ($Target -like "refs/*") {
+    $exactRef = $Target
+  } else {
+    $branchName = $Target
+    $localHeadRef = "refs/heads/$branchName"
+    $remoteRef = "refs/remotes/$RemoteName/$branchName"
+  }
+
+  [PSCustomObject]@{
+    BranchName = $branchName
+    LocalHeadRef = $localHeadRef
+    RemoteRef = $remoteRef
+    ExactRef = $exactRef
+  }
+}
+
+function Resolve-ExistingTargetRef {
+  param(
+    [Parameter(Mandatory = $true)]
+    [pscustomobject]$Refs,
+    [Parameter(Mandatory = $true)]
+    [string]$OriginalTarget
+  )
+
+  $candidates = @()
+  if ($Refs.RemoteRef) { $candidates += $Refs.RemoteRef }
+  if ($Refs.LocalHeadRef) { $candidates += $Refs.LocalHeadRef }
+  if ($Refs.ExactRef) { $candidates += $Refs.ExactRef }
+  if (-not $Refs.ExactRef) { $candidates += $OriginalTarget }
+
+  foreach ($candidate in $candidates) {
+    if ($candidate -and (Test-GitRef -Ref $candidate)) {
+      return $candidate
+    }
+  }
+
+  throw "Target branch '$TargetBranch' could not be resolved to an existing Git ref."
+}
+
+function Format-CommitLines {
+  param(
+    [Parameter(Mandatory = $true)]
+    [object[]]$Commits
+  )
+
+  if (-not $Commits -or $Commits.Count -eq 0) {
+    return @()
+  }
+
+  return $Commits | ForEach-Object {
+    "- $($_.subject) | $($_.authorDate) | $($_.authorName)"
+  }
+}
+
+function Test-MergeConflicts {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$TargetRef,
+    [Parameter(Mandatory = $true)]
+    [string]$SourceSha
+  )
+
+  $tempDir = Join-Path ([System.IO.Path]::GetTempPath()) ("codex-pre-pr-" + [Guid]::NewGuid().ToString("N"))
+  $pushEntered = $false
+
+  try {
+    Invoke-Git -Arguments @("worktree", "add", "--quiet", "--detach", $tempDir, $TargetRef) | Out-Null
+    Push-Location $tempDir
+    $pushEntered = $true
+
+    $mergeResult = Invoke-Git -Arguments @("merge", "--no-commit", "--no-ff", $SourceSha) -AllowFailure
+    $conflictedFiles = @()
+    $mergeable = $mergeResult.ExitCode -eq 0
+
+    if (-not $mergeable) {
+      $conflictedFiles = @(
+        Get-TrimmedGitOutput -Arguments @("diff", "--name-only", "--diff-filter=U")
+      ) | Where-Object { $_ -and $_.Trim() }
+    }
+
+    $mergeHeadExists = Test-Path (Join-Path $tempDir ".git\MERGE_HEAD")
+    if ($mergeHeadExists) {
+      Invoke-Git -Arguments @("merge", "--abort") -AllowFailure | Out-Null
+    }
+
+    return [PSCustomObject]@{
+      mergeable = $mergeable
+      conflictedFiles = @($conflictedFiles)
+      mergeOutput = @($mergeResult.Output)
+    }
+  } finally {
+    if ($pushEntered) {
+      Pop-Location
+    }
+
+    if (Test-Path $tempDir) {
+      Invoke-Git -Arguments @("worktree", "remove", "--force", $tempDir) -AllowFailure | Out-Null
+    }
+  }
+}
+
+$repoRoot = Get-TrimmedGitOutput -Arguments @("rev-parse", "--show-toplevel")
+$currentBranch = Get-TrimmedGitOutput -Arguments @("branch", "--show-current")
+$sourceSha = Get-TrimmedGitOutput -Arguments @("rev-parse", "HEAD")
+$workingTreeDirty = (Get-TrimmedGitOutput -Arguments @("status", "--porcelain")) -ne ""
+
+$targetRefs = Resolve-TargetRefs -Target $TargetBranch -RemoteName $Remote
+if (-not $NoFetch -and $targetRefs.BranchName) {
+  Invoke-Git -Arguments @(
+    "fetch",
+    $Remote,
+    "+refs/heads/$($targetRefs.BranchName):$($targetRefs.RemoteRef)",
+    "--prune"
+  ) | Out-Null
+}
+
+$resolvedTargetRef = Resolve-ExistingTargetRef -Refs $targetRefs -OriginalTarget $TargetBranch
+$mergeBase = Get-TrimmedGitOutput -Arguments @("merge-base", "HEAD", $resolvedTargetRef)
+$aheadBehind = (Get-TrimmedGitOutput -Arguments @("rev-list", "--left-right", "--count", "$resolvedTargetRef...HEAD")) -split "\s+"
+$targetOnlyCount = [int]$aheadBehind[0]
+$sourceOnlyCount = [int]$aheadBehind[1]
+
+$sourceOnlyShas = @(
+  (Invoke-Git -Arguments @("rev-list", "--reverse", "$resolvedTargetRef..HEAD")).Output
+) | Where-Object { $_ -and $_.Trim() }
+
+$targetOnlyShas = @(
+  (Invoke-Git -Arguments @("rev-list", "--reverse", "HEAD..$resolvedTargetRef")).Output
+) | Where-Object { $_ -and $_.Trim() }
+
+$sourceOnlyCommits = @($sourceOnlyShas | ForEach-Object { Get-CommitInfo -Commit $_ })
+$targetOnlyCommits = @($targetOnlyShas | ForEach-Object { Get-CommitInfo -Commit $_ })
+$mergeCheck = Test-MergeConflicts -TargetRef $resolvedTargetRef -SourceSha $sourceSha
+
+$result = [PSCustomObject]@{
+  repositoryRoot = $repoRoot
+  currentBranch = if ($currentBranch) { $currentBranch } else { "(detached HEAD)" }
+  sourceSha = $sourceSha
+  targetBranchInput = $TargetBranch
+  resolvedTargetRef = $resolvedTargetRef
+  remote = $Remote
+  fetched = (-not $NoFetch.IsPresent)
+  workingTreeDirty = $workingTreeDirty
+  mergeBase = $mergeBase
+  sourceOnlyCount = $sourceOnlyCount
+  targetOnlyCount = $targetOnlyCount
+  sourceOnlyCommits = $sourceOnlyCommits
+  targetOnlyCommits = $targetOnlyCommits
+  likelyMergeConflicts = (-not $mergeCheck.mergeable)
+  conflictedFiles = @($mergeCheck.conflictedFiles)
+}
+
+if ($Json) {
+  $result | ConvertTo-Json -Depth 8
+  exit 0
+}
+
+Write-Host "Pre-PR branch comparison"
+Write-Host "Repository root: $($result.repositoryRoot)"
+Write-Host "Current branch: $($result.currentBranch)"
+Write-Host "Source SHA: $($result.sourceSha)"
+Write-Host "Target branch input: $($result.targetBranchInput)"
+Write-Host "Resolved target ref: $($result.resolvedTargetRef)"
+Write-Host "Working tree dirty: $($result.workingTreeDirty)"
+Write-Host "Merge base: $($result.mergeBase)"
+Write-Host "Commits only in current branch: $($result.sourceOnlyCount)"
+Write-Host "Commits only in target branch: $($result.targetOnlyCount)"
+Write-Host "Likely merge conflicts if PR targets this branch: $($result.likelyMergeConflicts)"
+
+if ($sourceOnlyCommits.Count -gt 0) {
+  Write-Host ""
+  Write-Host "Commits unique to current branch (these would drive the PR):"
+  Format-CommitLines -Commits $sourceOnlyCommits | ForEach-Object { Write-Host $_ }
+}
+
+if ($targetOnlyCommits.Count -gt 0) {
+  Write-Host ""
+  Write-Host "Commits present in target branch but missing from current branch:"
+  Format-CommitLines -Commits $targetOnlyCommits | ForEach-Object { Write-Host $_ }
+}
+
+if ($mergeCheck.conflictedFiles.Count -gt 0) {
+  Write-Host ""
+  Write-Host "Files likely to conflict in merge:"
+  $mergeCheck.conflictedFiles | ForEach-Object { Write-Host "- $_" }
+}
+
+if ($workingTreeDirty) {
+  Write-Host ""
+  Write-Host "Warning: working tree has uncommitted changes. They are not part of the PR comparison."
+}
