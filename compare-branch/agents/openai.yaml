@@ -1,0 +1,4 @@
+interface:
+  display_name: "Compare Branch"
+  short_description: "Compare the current branch to a target branch before opening a PR"
+  default_prompt: "Compare my current branch against the specified target branch and summarize drift and likely PR conflicts."
