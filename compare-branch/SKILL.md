@@ -15,11 +15,11 @@ Run a deterministic pre-pull-request comparison between the current branch and a
 4. Read the report and summarize:
    - current branch
    - resolved target branch
-   - commits unique to the compared source ref by SHA/history
-   - commits present in the compared target ref but missing from the source ref by SHA/history
-   - commits from the source ref that are already present in the target by patch equivalence
-   - commits from the source ref that are still missing from the target by patch equivalence
-   - note that patch-equivalence data comes from `git cherry` and excludes merge commits
+   - commits unique to the compared source ref by SHA/history, excluding merge commits
+   - commits present in the compared target ref but missing from the source ref by SHA/history, excluding merge commits
+   - commits from the source ref that are already present in the target by patch equivalence, excluding merge commits
+   - commits from the source ref that are still missing from the target by patch equivalence, excluding merge commits
+   - note clearly that merge commits are intentionally excluded from the reported commit lists
    - whether the current working tree is dirty
    - whether a temporary merge test predicts conflicts
    - which files would likely conflict, when detected
