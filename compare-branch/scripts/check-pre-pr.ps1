@@ -114,6 +114,44 @@ function Get-CommitInfo {
   }
 }
 
+function Get-CherryComparison {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$TargetRef,
+    [Parameter(Mandatory = $true)]
+    [string]$SourceRef
+  )
+
+  $lines = @(
+    (Invoke-Git -Arguments @("cherry", "-v", $TargetRef, $SourceRef)).Output
+  ) | Where-Object { $_ -and $_.Trim() }
+
+  $equivalent = @()
+  $missing = @()
+
+  foreach ($line in $lines) {
+    if ($line -notmatch '^([+-])\s+([0-9a-fA-F]+)\s+') {
+      continue
+    }
+
+    $status = $Matches[1]
+    $sha = $Matches[2]
+    $info = Get-CommitInfo -Commit $sha
+
+    if ($status -eq '-') {
+      $equivalent += $info
+      continue
+    }
+
+    $missing += $info
+  }
+
+  return [PSCustomObject]@{
+    equivalentCommits = @($equivalent)
+    missingCommits = @($missing)
+  }
+}
+
 function Resolve-TargetRefs {
   param(
     [Parameter(Mandatory = $true)]
@@ -271,6 +309,8 @@ $targetOnlyShas = @(
 
 $sourceOnlyCommits = @($sourceOnlyShas | ForEach-Object { Get-CommitInfo -Commit $_ })
 $targetOnlyCommits = @($targetOnlyShas | ForEach-Object { Get-CommitInfo -Commit $_ })
+$cherryComparison = Get-CherryComparison -TargetRef $resolvedTargetRef -SourceRef "HEAD"
+$sourceOnlyMergeCommits = @($sourceOnlyCommits | Where-Object { $_.subject -like "Merge*" -or $_.subject -like "Merged PR*" })
 $mergeCheck = Test-MergeConflicts -TargetRef $resolvedTargetRef -SourceSha $sourceSha
 
 $result = [PSCustomObject]@{
@@ -287,6 +327,12 @@ $result = [PSCustomObject]@{
   targetOnlyCount = $targetOnlyCount
   sourceOnlyCommits = $sourceOnlyCommits
   targetOnlyCommits = $targetOnlyCommits
+  sourceOnlyMergeCommitCount = $sourceOnlyMergeCommits.Count
+  sourceOnlyMergeCommits = @($sourceOnlyMergeCommits)
+  sourcePatchEquivalentCount = $cherryComparison.equivalentCommits.Count
+  sourcePatchEquivalentCommits = @($cherryComparison.equivalentCommits)
+  sourcePatchMissingCount = $cherryComparison.missingCommits.Count
+  sourcePatchMissingCommits = @($cherryComparison.missingCommits)
   likelyMergeConflicts = (-not $mergeCheck.mergeable)
   conflictedFiles = @($mergeCheck.conflictedFiles)
 }
@@ -304,20 +350,36 @@ Write-Host "Target branch input: $($result.targetBranchInput)"
 Write-Host "Resolved target ref: $($result.resolvedTargetRef)"
 Write-Host "Working tree dirty: $($result.workingTreeDirty)"
 Write-Host "Merge base: $($result.mergeBase)"
-Write-Host "Commits only in current branch: $($result.sourceOnlyCount)"
-Write-Host "Commits only in target branch: $($result.targetOnlyCount)"
+Write-Host "Commits only in current branch by SHA/history: $($result.sourceOnlyCount)"
+Write-Host "Commits only in target branch by SHA/history: $($result.targetOnlyCount)"
+Write-Host "Merge commits in current-branch SHA/history set: $($result.sourceOnlyMergeCommitCount)"
+Write-Host "Current-branch commits already present in target by patch: $($result.sourcePatchEquivalentCount)"
+Write-Host "Current-branch commits missing from target by patch: $($result.sourcePatchMissingCount)"
 Write-Host "Likely merge conflicts if PR targets this branch: $($result.likelyMergeConflicts)"
+Write-Host "Note: patch-equivalence counts come from git cherry and ignore merge commits."
 
 if ($sourceOnlyCommits.Count -gt 0) {
   Write-Host ""
-  Write-Host "Commits unique to current branch (these would drive the PR):"
+  Write-Host "Commits unique to current branch by SHA/history:"
   Format-CommitLines -Commits $sourceOnlyCommits | ForEach-Object { Write-Host $_ }
 }
 
 if ($targetOnlyCommits.Count -gt 0) {
   Write-Host ""
-  Write-Host "Commits present in target branch but missing from current branch:"
+  Write-Host "Commits present in target branch but missing from current branch by SHA/history:"
   Format-CommitLines -Commits $targetOnlyCommits | ForEach-Object { Write-Host $_ }
+}
+
+if ($result.sourcePatchEquivalentCount -gt 0) {
+  Write-Host ""
+  Write-Host "Current-branch commits already present in target by patch equivalence:"
+  Format-CommitLines -Commits $result.sourcePatchEquivalentCommits | ForEach-Object { Write-Host $_ }
+}
+
+if ($result.sourcePatchMissingCount -gt 0) {
+  Write-Host ""
+  Write-Host "Current-branch commits still missing from target by patch equivalence (these would likely drive the PR):"
+  Format-CommitLines -Commits $result.sourcePatchMissingCommits | ForEach-Object { Write-Host $_ }
 }
 
 if ($mergeCheck.conflictedFiles.Count -gt 0) {
