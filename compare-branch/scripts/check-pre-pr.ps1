@@ -403,6 +403,18 @@ if ($result.sourcePatchMissingCount -gt 0) {
   Format-CommitLines -Commits $result.sourcePatchMissingCommits | ForEach-Object { Write-Host $_ }
 }
 
+if ($result.sourcePatchEquivalentCount -gt 0) {
+  Write-Host ""
+  Write-Host "Current-branch commits already present in target by patch equivalence:"
+  Format-CommitLines -Commits $result.sourcePatchEquivalentCommits | ForEach-Object { Write-Host $_ }
+}
+
+if ($result.sourcePatchMissingCount -gt 0) {
+  Write-Host ""
+  Write-Host "Current-branch commits still missing from target by patch equivalence (these would likely drive the PR):"
+  Format-CommitLines -Commits $result.sourcePatchMissingCommits | ForEach-Object { Write-Host $_ }
+}
+
 if ($mergeCheck.conflictedFiles.Count -gt 0) {
   Write-Host ""
   Write-Host "Files likely to conflict in merge:"
