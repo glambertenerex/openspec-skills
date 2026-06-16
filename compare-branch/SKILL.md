@@ -15,8 +15,11 @@ Run a deterministic pre-pull-request comparison between the current branch and a
 4. Read the report and summarize:
    - current branch
    - resolved target branch
-   - commits unique to the compared source ref
-   - commits present in the compared target ref but missing from the source ref
+   - commits unique to the compared source ref by SHA/history
+   - commits present in the compared target ref but missing from the source ref by SHA/history
+   - commits from the source ref that are already present in the target by patch equivalence
+   - commits from the source ref that are still missing from the target by patch equivalence
+   - note that patch-equivalence data comes from `git cherry` and excludes merge commits
    - whether the current working tree is dirty
    - whether a temporary merge test predicts conflicts
    - which files would likely conflict, when detected
@@ -24,6 +27,7 @@ Run a deterministic pre-pull-request comparison between the current branch and a
      - commit subject
      - author name
      - author date
+   - explain clearly that SHA/history comparison and patch-equivalence comparison are different signals
    - when the comparison is requested against `origin/...`, report only the commits from the compared remote refs and do not mix in unrelated local branch names or local-only refs
 5. If the user asks for a machine-readable result, run the script with `-Json`.
 
