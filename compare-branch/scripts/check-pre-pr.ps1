@@ -166,6 +166,7 @@ function Get-CherryComparison {
     missingCommits = @($missing)
   }
 }
+
 function Resolve-TargetRefs {
   param(
     [Parameter(Mandatory = $true)]
@@ -310,8 +311,6 @@ if (-not $NoFetch -and $targetRefs.BranchName) {
 $resolvedTargetRef = Resolve-ExistingTargetRef -Refs $targetRefs -OriginalTarget $TargetBranch
 $mergeBase = Get-TrimmedGitOutput -Arguments @("merge-base", "HEAD", $resolvedTargetRef)
 $aheadBehind = (Get-TrimmedGitOutput -Arguments @("rev-list", "--left-right", "--count", "$resolvedTargetRef...HEAD")) -split "\s+"
-$targetOnlyCount = [int]$aheadBehind[0]
-$sourceOnlyCount = [int]$aheadBehind[1]
 
 $sourceOnlyShas = @(
   (Invoke-Git -Arguments @("rev-list", "--reverse", "$resolvedTargetRef..HEAD")).Output
@@ -378,13 +377,13 @@ Write-Host "Current-branch commits missing from target by patch: $($result.sourc
 Write-Host "Likely merge conflicts if PR targets this branch: $($result.likelyMergeConflicts)"
 Write-Host "Note: merge commits are excluded from the reported commit lists."
 
-if ($sourceOnlyCommits.Count -gt 0) {
+if ($result.sourceOnlyCommits.Count -gt 0) {
   Write-Host ""
   Write-Host "Commits unique to current branch by SHA/history (excluding merge commits):"
   Format-CommitLines -Commits $result.sourceOnlyCommits | ForEach-Object { Write-Host $_ }
 }
 
-if ($targetOnlyCommits.Count -gt 0) {
+if ($result.targetOnlyCommits.Count -gt 0) {
   Write-Host ""
   Write-Host "Commits present in target branch but missing from current branch by SHA/history (excluding merge commits):"
   Format-CommitLines -Commits $result.targetOnlyCommits | ForEach-Object { Write-Host $_ }
