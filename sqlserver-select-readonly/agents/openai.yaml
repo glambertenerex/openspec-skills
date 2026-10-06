@@ -1,0 +1,4 @@
+interface:
+  display_name: "SQL Server Select Readonly"
+  short_description: "Run SQL Server read-only SELECT queries safely."
+  default_prompt: "Use this skill to run a read-only SQL Server query with strict SELECT-only validation."
