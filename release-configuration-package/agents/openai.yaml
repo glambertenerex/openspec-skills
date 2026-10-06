@@ -1,0 +1,3 @@
+interface:
+  display_name: "Release Configuration Package"
+  short_description: "Export test-to-master release scripts and settings"
